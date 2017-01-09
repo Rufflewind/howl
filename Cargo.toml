@@ -1,0 +1,6 @@
+[package]
+name = "howl"
+version = "0.1.0"
+authors = ["rf"]
+
+[dependencies]
