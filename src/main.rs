@@ -166,8 +166,14 @@ fn slice_rspan<T, F>(s: &[T], mut pred: F) -> (&[T], &[T])
     (rest, suffix)
 }
 
+static DIVIDER: u8 = b'/';
+
+fn is_divider(c: u8) -> bool {
+    c == DIVIDER
+}
+
 fn is_word_char(c: u8) -> bool {
-    !is_ascii_space(c) && c != b'/'
+    !(is_ascii_space(c) || is_divider(c))
 }
 
 impl<'a> Iterator for Lexer<'a> {
@@ -200,7 +206,11 @@ impl<'a> Iterator for Lexer<'a> {
                     Some((pre, delim, input)) => { // found delimiter
                         self.input = input;
                         let (word, chunk) = slice_rspan(
-                            pre, |c| is_word_char(*c));
+                            pre, |&c| is_word_char(c));
+                        let chunk = match chunk.split_last() {
+                            Some((&c, rest)) if is_divider(c) => rest,
+                            _ => chunk,
+                        };
                         // assuming words can never contain newlines
                         self.loc.col -= word.len();
                         self.state = Some((word, delim));
@@ -254,48 +264,69 @@ impl<'a, L> Elem<&'a [u8], L> {
 }
 
 trait WriteTo {
-    fn write_to<W>(&self, f: &mut W) -> ::std::io::Result<()>
-        where W: ::std::io::Write;
+    type State;
+    fn write_to<W>(&self, f: &mut W, s: &mut Self::State)
+                   -> ::std::io::Result<()> where W: ::std::io::Write;
 }
 
-fn write_to_vec<T: ?Sized>(x: &T) -> Vec<u8> where T: WriteTo {
+fn write_to_vec<T: ?Sized>(x: &T, s: &mut T::State)
+                           -> Vec<u8> where T: WriteTo {
     let mut v = Vec::new();
-    x.write_to(&mut v).unwrap();
+    x.write_to(&mut v, s).unwrap();
     v
 }
 
 impl<'a> WriteTo for [u8] {
-    fn write_to<W>(&self, f: &mut W) -> ::std::io::Result<()>
-        where W: ::std::io::Write {
+    type State = ();
+    fn write_to<W>(&self, f: &mut W, _: &mut Self::State)
+                   -> ::std::io::Result<()> where W: ::std::io::Write {
         f.write_all(self)
     }
 }
 
+enum NodeWriteState { Clean, Sticky }
+
 impl<'a, L> WriteTo for [Node<&'a [u8], L>] {
-    fn write_to<W>(&self, f: &mut W) -> ::std::io::Result<()>
-        where W: ::std::io::Write {
+    type State = NodeWriteState;
+    fn write_to<W>(&self, f: &mut W, s: &mut Self::State)
+                   -> ::std::io::Result<()> where W: ::std::io::Write {
         for x in self {
-            try!(x.write_to(f))
+            try!(x.write_to(f, s))
         }
         Ok(())
     }
 }
 
 impl<'a, L> WriteTo for Node<&'a [u8], L> {
-    fn write_to<W>(&self, f: &mut W) -> ::std::io::Result<()>
-        where W: ::std::io::Write {
+    type State = NodeWriteState;
+    fn write_to<W>(&self, f: &mut W, s: &mut Self::State)
+                   -> ::std::io::Result<()> where W: ::std::io::Write {
         match self {
-            &Node::Text(s) => s.write_to(f),
-            &Node::Elem(ref elem) => {
-                try!(elem.name.write_to(f));
-                try!(Delim(elem.delim, DelimSide::Open).to_u8s().write_to(f));
-                try!(elem.children.write_to(f));
-                if is_escape(elem.name) {
-                    try!(elem.name.write_to(f));
+            &Node::Text(t) => {
+                try!(t.write_to(f, &mut ()));
+                if is_word_char(*t.last().unwrap_or(&b' ')) {
+                    *s = NodeWriteState::Sticky;
+                } else {
+                    *s = NodeWriteState::Clean;
                 }
-                Delim(elem.delim, DelimSide::Close).to_u8s().write_to(f)
+            }
+            &Node::Elem(ref elem) => {
+                if let &mut NodeWriteState::Sticky = s {
+                    try!([DIVIDER].write_to(f, &mut ()));
+                }
+                try!(elem.name.write_to(f, &mut ()));
+                try!(Delim(elem.delim, DelimSide::Open).to_u8s()
+                     .write_to(f, &mut ()));
+                try!(elem.children.write_to(f, s));
+                if is_escape(elem.name) {
+                    try!(elem.name.write_to(f, &mut ()));
+                }
+                try!(Delim(elem.delim, DelimSide::Close).to_u8s()
+                     .write_to(f, &mut ()));
+                *s = NodeWriteState::Clean;
             },
         }
+        Ok(())
     }
 }
 
@@ -321,7 +352,7 @@ impl<'a> Node<&'a [u8], Loc<'a>> {
             name: &[] as &[u8],
             delim: DelimType::Parenthesis,
             children: Vec::new(),
-            loc: Loc::new(""),
+            loc: Default::default(),
         };
         for token in tokens {
             let esc = is_escape(top.name);
@@ -426,7 +457,8 @@ fn main() {
     for err in &errs {
         writeln!(stderr(), "{}", err).unwrap();
     }
-    print!("{}", String::from_utf8_lossy(&write_to_vec(&nodes as &[_])));
+    print!("{}", String::from_utf8_lossy(
+        &write_to_vec(&nodes as &[_], &mut NodeWriteState::Clean)));
     if !errs.is_empty() {
         ::std::process::exit(1);
     }
