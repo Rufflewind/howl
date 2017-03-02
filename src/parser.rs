@@ -1,9 +1,10 @@
+use std::{self, fmt, io, mem};
 use debug::debug_utf8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Delim<T> { Open(T), Close(T) }
 
-impl<T> ::std::ops::Not for Delim<T> {
+impl<T> std::ops::Not for Delim<T> {
     type Output = Self;
     fn not(self) -> Self::Output {
         use self::Delim::*;
@@ -101,8 +102,8 @@ impl<'a> Default for Loc<'a> {
     }
 }
 
-impl<'a> ::std::fmt::Display for Loc<'a> {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+impl<'a> fmt::Display for Loc<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.name.is_empty() {
             write!(f, "<unknown>")
         } else {
@@ -117,8 +118,8 @@ enum Token<'a>{
     Tag(Loc<'a>, &'a [u8], Delim<DelimType>),
 }
 
-impl<'a> ::std::fmt::Debug for Token<'a> {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+impl<'a> fmt::Debug for Token<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             &Token::Chunk(ref loc, ref s) => {
                 f.debug_tuple("Chunk")
@@ -187,7 +188,7 @@ fn is_word_char(c: u8) -> bool {
 impl<'a> Iterator for Lexer<'a> {
     type Item = Token<'a>;
     fn next(&mut self) -> Option<Self::Item> {
-        match ::std::mem::replace(&mut self.state, None) {
+        match mem::replace(&mut self.state, None) {
             None => {
                 // end of input
                 if self.input.len() == 0 {
@@ -249,10 +250,10 @@ impl<'a> Iterator for Lexer<'a> {
 
 #[derive(Clone, Debug)]
 pub struct Elem<T, L> {
-    name: T,
-    delim: DelimType,
-    children: Vec<Node<T, L>>,
-    loc: L,
+    pub name: T,
+    pub delim: DelimType,
+    pub children: Vec<Node<T, L>>,
+    pub loc: L,
 }
 
 type IntoTextNodesIter<T> =
@@ -284,10 +285,10 @@ impl<'a, L> Elem<&'a [u8], L> {
     }
 }
 
-trait WriteTo {
+pub trait WriteTo {
     type State;
     fn write_to<W>(&self, f: &mut W, s: &mut Self::State)
-                   -> ::std::io::Result<()> where W: ::std::io::Write;
+                   -> io::Result<()> where W: io::Write;
 }
 
 fn write_to_vec<T: ?Sized>(x: &T, s: &mut T::State)
@@ -300,17 +301,17 @@ fn write_to_vec<T: ?Sized>(x: &T, s: &mut T::State)
 impl<'a> WriteTo for [u8] {
     type State = ();
     fn write_to<W>(&self, f: &mut W, _: &mut Self::State)
-                   -> ::std::io::Result<()> where W: ::std::io::Write {
+                   -> io::Result<()> where W: io::Write {
         f.write_all(self)
     }
 }
 
-enum NodeWriteState { Clean, Sticky }
+pub enum NodeWriteState { Clean, Sticky }
 
 impl<'a, L> WriteTo for [Node<&'a [u8], L>] {
     type State = NodeWriteState;
     fn write_to<W>(&self, f: &mut W, s: &mut Self::State)
-                   -> ::std::io::Result<()> where W: ::std::io::Write {
+                   -> io::Result<()> where W: io::Write {
         for x in self {
             x.write_to(f, s)?
         }
@@ -321,7 +322,7 @@ impl<'a, L> WriteTo for [Node<&'a [u8], L>] {
 impl<'a, L> WriteTo for Node<&'a [u8], L> {
     type State = NodeWriteState;
     fn write_to<W>(&self, f: &mut W, s: &mut Self::State)
-                   -> ::std::io::Result<()> where W: ::std::io::Write {
+                   -> io::Result<()> where W: io::Write {
         match self {
             &Node::Text(t) => {
                 t.write_to(f, &mut ())?;
@@ -355,7 +356,7 @@ pub enum Node<T, L> {
     Elem(Elem<T, L>),
 }
 
-fn is_literal(name: &[u8]) -> bool {
+pub fn is_literal(name: &[u8]) -> bool {
     match name.first() {
         Some(&ESCAPER) => true,
         _ => false,
@@ -438,7 +439,7 @@ impl<'a> Node<&'a [u8], Loc<'a>> {
                 }
             }
         }
-        let mut nodes = ::std::mem::replace(match stack.first_mut() {
+        let mut nodes = mem::replace(match stack.first_mut() {
             Some(root) => {
                 let d = Delim::Open(top.delim).as_bytes();
                 errs.push(format!(
