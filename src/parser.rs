@@ -56,10 +56,10 @@ impl Delim<DelimType> {
     }
 
     pub fn to_u8(&self) -> u8 {
-        self.to_u8s()[0]
+        self.as_bytes()[0]
     }
 
-    pub fn to_u8s(&self) -> &'static [u8] {
+    pub fn as_bytes(&self) -> &'static [u8] {
         use self::Delim::*;
         use self::DelimType::*;
         match self {
@@ -177,14 +177,11 @@ fn slice_rspan<T, F>(s: &[T], mut pred: F) -> (&[T], &[T])
     (rest, suffix)
 }
 
-static DIVIDER: u8 = b'/';
-
-fn is_divider(c: u8) -> bool {
-    c == DIVIDER
-}
+const ESCAPER: u8 = b'\\';
+const DIVIDER: u8 = b'|';
 
 fn is_word_char(c: u8) -> bool {
-    !(is_ascii_space(c) || is_divider(c))
+    !(is_ascii_space(c) || c == DIVIDER || c == ESCAPER)
 }
 
 impl<'a> Iterator for Lexer<'a> {
@@ -216,10 +213,20 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                     Some((pre, delim, input)) => { // found delimiter
                         self.input = input;
-                        let (word, chunk) = slice_rspan(
-                            pre, |&c| is_word_char(c));
+                        let mut stop = false;
+                        let (word, chunk) = slice_rspan(pre, |&c| {
+                            match c {
+                                ESCAPER => {
+                                    stop = true;
+                                    true
+                                },
+                                _ => {
+                                    !stop && is_word_char(c)
+                                }
+                            }
+                        });
                         let chunk = match chunk.split_last() {
-                            Some((&c, rest)) if is_divider(c) => rest,
+                            Some((&c, rest)) if c == DIVIDER => rest,
                             _ => chunk,
                         };
                         // assuming words can never contain newlines
@@ -255,10 +262,11 @@ type IntoTextNodesIter<T> =
 
 fn escape_delim<'a, L: Default>(delim: Delim<DelimType>)
                                 -> Node<&'a [u8], L> {
+    const ESCAPER_BYTES: &[u8] = &[ESCAPER];
     Node::Elem(Elem {
-        name: b"\\" as &[u8],
+        name: ESCAPER_BYTES,
         delim: DelimType::Parenthesis,
-        children: vec![Node::Text(delim.to_u8s())],
+        children: vec![Node::Text(delim.as_bytes())],
         loc: L::default(),
     })
 }
@@ -304,7 +312,7 @@ impl<'a, L> WriteTo for [Node<&'a [u8], L>] {
     fn write_to<W>(&self, f: &mut W, s: &mut Self::State)
                    -> ::std::io::Result<()> where W: ::std::io::Write {
         for x in self {
-            try!(x.write_to(f, s))
+            x.write_to(f, s)?
         }
         Ok(())
     }
@@ -316,7 +324,7 @@ impl<'a, L> WriteTo for Node<&'a [u8], L> {
                    -> ::std::io::Result<()> where W: ::std::io::Write {
         match self {
             &Node::Text(t) => {
-                try!(t.write_to(f, &mut ()));
+                t.write_to(f, &mut ())?;
                 if is_word_char(*t.last().unwrap_or(&b' ')) {
                     *s = NodeWriteState::Sticky;
                 } else {
@@ -325,17 +333,15 @@ impl<'a, L> WriteTo for Node<&'a [u8], L> {
             }
             &Node::Elem(ref elem) => {
                 if let &mut NodeWriteState::Sticky = s {
-                    try!([DIVIDER].write_to(f, &mut ()));
+                    [DIVIDER].write_to(f, &mut ())?;
                 }
-                try!(elem.name.write_to(f, &mut ()));
-                try!(Delim::Open(elem.delim).to_u8s()
-                     .write_to(f, &mut ()));
-                try!(elem.children.write_to(f, s));
-                if is_escape(elem.name) {
-                    try!(elem.name.write_to(f, &mut ()));
+                elem.name.write_to(f, &mut ())?;
+                Delim::Open(elem.delim).as_bytes().write_to(f, &mut ())?;
+                elem.children.write_to(f, s)?;
+                if is_literal(elem.name) {
+                    elem.name.write_to(f, &mut ())?;
                 }
-                try!(Delim::Close(elem.delim).to_u8s()
-                     .write_to(f, &mut ()));
+                Delim::Close(elem.delim).as_bytes().write_to(f, &mut ())?;
                 *s = NodeWriteState::Clean;
             },
         }
@@ -349,9 +355,9 @@ pub enum Node<T, L> {
     Elem(Elem<T, L>),
 }
 
-fn is_escape(name: &[u8]) -> bool {
+fn is_literal(name: &[u8]) -> bool {
     match name.first() {
-        Some(&b'\\') => true,
+        Some(&ESCAPER) => true,
         _ => false,
     }
 }
@@ -360,7 +366,7 @@ impl<'a> Node<&'a [u8], Loc<'a>> {
     pub fn parse(s: &'a [u8], path: &'a str) ->(Vec<Self>, Vec<String>) {
         Node::parse_tokens(Lexer::new(&s, Loc::new(path)))
     }
-    
+
     fn parse_tokens<I: Iterator<Item=Token<'a>>>(tokens: I)
                                                  -> (Vec<Self>, Vec<String>) {
         let mut errs = Vec::new();
@@ -372,7 +378,7 @@ impl<'a> Node<&'a [u8], Loc<'a>> {
             loc: Default::default(),
         };
         for token in tokens {
-            let esc = is_escape(top.name);
+            let esc = is_literal(top.name);
             match token {
                 Token::Chunk(_, s) => {
                     top.children.push(Node::Text(s));
@@ -380,7 +386,7 @@ impl<'a> Node<&'a [u8], Loc<'a>> {
                 Token::Tag(loc, word, delim) => match delim {
                     _ if esc && top.name != word => {
                         top.children.push(Node::Text(word));
-                        top.children.push(Node::Text(delim.to_u8s()));
+                        top.children.push(Node::Text(delim.as_bytes()));
                     }
                     Delim::Open(dtype) => {
                         stack.push(top);
@@ -400,9 +406,9 @@ impl<'a> Node<&'a [u8], Loc<'a>> {
                             errs.push(format!(
                                 "{}: ‘{}’ doesn’t close ‘{}{}’ at {}",
                                 loc,
-                                String::from_utf8_lossy(delim.to_u8s()),
+                                String::from_utf8_lossy(delim.as_bytes()),
                                 debug_utf8(top.name),
-                                String::from_utf8_lossy(d.to_u8s()),
+                                String::from_utf8_lossy(d.as_bytes()),
                                 top.loc));
                             top.children.push(escape_delim(d));
                         } else {
@@ -411,7 +417,7 @@ impl<'a> Node<&'a [u8], Loc<'a>> {
                                     // we're at root level (which is never
                                     // an escaping context), so there's
                                     // nothing to close
-                                    let d = delim.to_u8s();
+                                    let d = delim.as_bytes();
                                     errs.push(format!(
                                         "{}: ‘{}’ doesn’t close anything",
                                         loc, String::from_utf8_lossy(d)));
@@ -434,7 +440,7 @@ impl<'a> Node<&'a [u8], Loc<'a>> {
         }
         let mut nodes = ::std::mem::replace(match stack.first_mut() {
             Some(root) => {
-                let d = Delim::Open(top.delim).to_u8s();
+                let d = Delim::Open(top.delim).as_bytes();
                 errs.push(format!(
                     "{}: ‘{}{}’ was never closed",
                     top.loc,

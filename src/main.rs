@@ -1,10 +1,10 @@
-pub mod parser;
-pub mod debug;
+extern crate howl;
+use howl::parser;
 
 fn main() {
     use std::io::{Write, stderr};
     use std::process::exit;
-    let args: Vec<String> = ::std::env::args().collect();
+    let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
         writeln!(stderr(), "need 1 command-line argument").unwrap();
         exit(1);

@@ -1,6 +1,10 @@
 [package]
 name = "howl"
 version = "0.1.0"
-authors = ["rf"]
+authors = ["Phil Ruffwind <rf@rufflewind.com>"]
 
 [dependencies]
+
+[[bin]]
+name = "lutario"
+doc = false
